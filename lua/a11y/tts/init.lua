@@ -1,21 +1,19 @@
 -- lua/a11y/tts/init.lua
 -- Interfaz pública de la utilería TTS
--- Cualquier módulo puede requerir este archivo y usar sus funciones
--- Los eventos que expone son solo para monitoreo
+-- Integra queue, dedup y speed para voz controlada y no saturada
 
-local queue = require("a11y.tts.queue")
+local queue     = require("a11y.tts.queue")
+local dedup     = require("a11y.tts.dedup")
+local speed     = require("a11y.tts.speed")
 
 local M = {}
 
 -- ─────────────────────────────────────────
--- Listeners internos para eventos de monitoreo
--- Estructura: { evento = { handler1, handler2, ... } }
+-- Listeners de eventos de monitoreo
 -- ─────────────────────────────────────────
 
 local listeners = {}
 
--- Registra un handler para un evento de monitoreo
--- Eventos disponibles: "start", "finish", "cancel", "error"
 function M.on(event, handler)
   if not listeners[event] then
     listeners[event] = {}
@@ -23,7 +21,6 @@ function M.on(event, handler)
   table.insert(listeners[event], handler)
 end
 
--- Despacha un evento de monitoreo a todos sus handlers
 local function dispatch(event, data)
   if not listeners[event] then return end
   for _, handler in ipairs(listeners[event]) do
@@ -32,13 +29,40 @@ local function dispatch(event, data)
 end
 
 -- ─────────────────────────────────────────
+-- Configuración pública
+-- ─────────────────────────────────────────
+
+-- Permite configurar dedup y speed desde fuera
+function M.setup(opts)
+  opts = opts or {}
+
+  if opts.dedup_window_ms then
+    dedup.window_ms = opts.dedup_window_ms
+  end
+
+  if opts.speed then
+    if opts.speed.fast_threshold then
+      speed.config.fast_threshold = opts.speed.fast_threshold
+    end
+    if opts.speed.window_ms then
+      speed.config.window_ms = opts.speed.window_ms
+    end
+    if opts.speed.stop_delay_ms then
+      speed.config.stop_delay_ms = opts.speed.stop_delay_ms
+    end
+  end
+end
+
+-- ─────────────────────────────────────────
 -- Interfaz pública
 -- ─────────────────────────────────────────
 
--- Encola un mensaje respetando prioridad y turno
--- opts = { priority, insert_type }
 function M.speak(text, opts)
   opts = opts or {}
+
+  -- Filtro de deduplicación
+  if not dedup.should_speak(text) then return end
+
   dispatch("start", { text = text })
 
   queue.add({
@@ -48,27 +72,49 @@ function M.speak(text, opts)
   })
 end
 
--- Interrumpe el mensaje actual y habla inmediatamente
 function M.interrupt(text)
+  dedup.reset()
   dispatch("cancel", {})
-  M.speak(text, { priority = 1, insert_type = "interrupt" })
+  queue.add({
+    text        = text,
+    priority    = 1,
+    insert_type = "interrupt",
+  })
 end
 
--- Vacía la cola y habla inmediatamente
 function M.flush(text)
+  dedup.reset()
   dispatch("cancel", {})
-  M.speak(text, { priority = 2, insert_type = "flush" })
+  queue.add({
+    text        = text,
+    priority    = 2,
+    insert_type = "flush",
+  })
 end
 
--- Detiene toda la voz y vacía la cola
 function M.stop()
   queue.clear()
+  dedup.reset()
+  speed.reset()
   dispatch("cancel", {})
 end
 
--- Estado actual
 function M.is_speaking()
   return queue.is_speaking()
+end
+
+-- Expone speed para que los modos puedan
+-- notificar movimientos y consultar verbosidad
+function M.on_move()
+  speed.on_move()
+end
+
+function M.verbosity()
+  return speed.verbosity()
+end
+
+function M.on_stop(handler)
+  speed.on_stop(handler)
 end
 
 return M
