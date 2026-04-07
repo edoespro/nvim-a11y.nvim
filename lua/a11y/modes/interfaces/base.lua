@@ -1,25 +1,31 @@
 -- lua/a11y/modes/interfaces/base.lua
--- Contrato que todos los modos deben cumplir
--- Define los métodos obligatorios del ciclo de vida
--- y manejo de eventos crudos de Neovim
+-- Contrato base que todos los modos deben cumplir.
+-- Define el ciclo de vida, manejo de eventos crudos de Neovim
+-- y el sistema interno de suscripción a eventos propios del modo.
 
 local M = {}
--- Verifica que un modo implementa todos los métodos
--- de esta interfaz. Lanza error descriptivo si falta alguno.
-function M.verify(mode)
-  local required = {
-    "on_enter",
-    "on_exit",
-    "on_key",
-    "on_cursor_moved",
-    "context",
-    "subscribe",
-  }
 
-  for _, method in ipairs(required) do
+-- ─────────────────────────────────────────
+-- Verificación de contrato
+-- ─────────────────────────────────────────
+
+-- Métodos obligatorios que todo modo debe implementar
+local required_methods = {
+  "on_enter",
+  "on_exit",
+  "on_key",
+  "on_cursor_moved",
+  "context",
+  "subscribe",
+}
+
+-- Verifica que un modo implementa todos los métodos requeridos.
+-- Lanza error descriptivo en tiempo de carga si falta alguno.
+function M.verify(mode)
+  for _, method in ipairs(required_methods) do
     if type(mode[method]) ~= "function" then
       error(string.format(
-        "[a11y] El modo '%s' debe implementar '%s'",
+        "[a11y] El modo '%s' debe implementar el método '%s' (interface Base)",
         mode.name or "desconocido",
         method
       ))
@@ -27,37 +33,48 @@ function M.verify(mode)
   end
 end
 
--- Métodos que definen el contrato base
--- Cada modo los sobreescribe con su propia lógica
+-- ─────────────────────────────────────────
+-- Sistema de suscripción reutilizable
+-- Cualquier modo puede usar esta función para
+-- construir su tabla interna de listeners
+-- ─────────────────────────────────────────
 
--- Llamado cuando el modo se activa
-function M.on_enter(self)
-  error(self.name .. " debe implementar on_enter()")
+-- Crea y devuelve una tabla de listeners vacía.
+-- Cada modo llama a esto en su inicialización.
+function M.new_listeners()
+  return {}
 end
 
--- Llamado cuando el modo se desactiva
-function M.on_exit(self)
-  error(self.name .. " debe implementar on_exit()")
+-- Registra un handler para un evento propio del modo.
+-- Soporta múltiples handlers por evento.
+-- listeners : tabla de listeners del modo
+-- event     : nombre del evento (ej: "line_changed")
+-- handler   : función a ejecutar cuando ocurra el evento
+function M.on(listeners, event, handler)
+  if type(handler) ~= "function" then
+    error(string.format(
+      "[a11y] El handler para '%s' debe ser una función",
+      event
+    ))
+  end
+
+  if not listeners[event] then
+    listeners[event] = {}
+  end
+
+  table.insert(listeners[event], handler)
 end
 
--- Llamado con cada tecla presionada
-function M.on_key(self, key)
-  error(self.name .. " debe implementar on_key()")
-end
+-- Despacha un evento a todos sus handlers registrados.
+-- listeners : tabla de listeners del modo
+-- event     : nombre del evento a despachar
+-- data      : datos puros del evento (sin texto TTS ni prioridad)
+function M.dispatch(listeners, event, data)
+  if not listeners[event] then return end
 
--- Llamado cuando el cursor se mueve
-function M.on_cursor_moved(self, pos)
-  error(self.name .. " debe implementar on_cursor_moved()")
-end
-
--- Devuelve el estado actual del modo
-function M.context(self)
-  error(self.name .. " debe implementar context()")
-end
-
--- Registra suscriptores a los eventos propios del modo
-function M.subscribe(self, event, handler)
-  error(self.name .. " debe implementar subscribe()")
+  for _, handler in ipairs(listeners[event]) do
+    handler(data)
+  end
 end
 
 return M
